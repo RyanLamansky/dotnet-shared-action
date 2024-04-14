@@ -11,7 +11,7 @@ using System.Collections.Concurrent;
 /// <param name="comparer">If provided, enables customized comparison of <typeparamref name="TKey"/> values.</param>
 /// <remarks>
 /// In general, instances of this type should be reused as long as shared action duplicate inputs are possible.
-/// As an example, web applications using this to share API results should store the instance in a static readonly field.
+/// For example, web applications using this to share API results should store the instance in a static readonly field.
 /// </remarks>
 public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null)
     : IDisposable
@@ -56,7 +56,10 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
     {
         var workspace = GetWorkspacesOrThrowDisposedException().GetOrAdd(input, static _ => new());
 
-        await workspace.WaitAsync().ConfigureAwait(false);
+        using (var workspaceWait = workspace.WaitAsync())
+        {
+            await workspaceWait.ConfigureAwait(false);
+        }
 
         try
         {
@@ -99,7 +102,10 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
 
         var workspace = GetWorkspacesOrThrowDisposedException().GetOrAdd(input, static _ => new());
 
-        await workspace.WaitAsync(cancellationToken).ConfigureAwait(false);
+        using (var workspaceWait = workspace.WaitAsync(cancellationToken))
+        {
+            await workspaceWait.ConfigureAwait(false);
+        }
 
         try
         {
@@ -107,7 +113,7 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
             {
                 try
                 {
-                    workspace.Result =await valueFactory(input, cancellationToken).ConfigureAwait(false);
+                    workspace.Result = await valueFactory(input, cancellationToken).ConfigureAwait(false);
                 }
                 finally
                 {
