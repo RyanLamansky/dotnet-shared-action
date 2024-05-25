@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 
-namespace SharedAction;
+namespace SharedHelpers;
 
 public static class SharedActionTests
 {

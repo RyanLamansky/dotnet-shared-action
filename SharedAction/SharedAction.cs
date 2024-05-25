@@ -1,6 +1,6 @@
-﻿namespace SharedAction;
+﻿using System.Collections.Concurrent;
 
-using System.Collections.Concurrent;
+namespace SharedHelpers; // Needed something here, but you should use your own choice when copying into your project.
 
 /// <summary>
 /// Shares the result of a single action among one or more concurrent requests.
@@ -23,7 +23,7 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
         {
         }
 
-        internal readonly struct Container(TValue result)
+        private readonly struct Container(TValue result)
         {
             public readonly bool HasResult = true; // False if the constructor doesn't run.
             public readonly TValue Result = result; // Default of TValue if the constructor doesn't run.
@@ -54,6 +54,13 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
     /// <returns>A task that, upon completion, provides the result of processing.</returns>
     public async Task<TValue> RunAsync(TKey input, Func<TKey, Task<TValue>> valueFactory)
     {
+#if NET7_0_OR_GREATER
+        ArgumentNullException.ThrowIfNull(valueFactory);
+#else
+        if (valueFactory is null)
+            throw new ArgumentNullException(nameof(valueFactory));
+#endif
+
         var workspace = GetWorkspacesOrThrowDisposedException().GetOrAdd(input, static _ => new());
 
         using (var workspaceWait = workspace.WaitAsync())
@@ -98,6 +105,13 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was triggered before completion.</exception>
     public async Task<TValue> RunAsync(TKey input, Func<TKey, CancellationToken, Task<TValue>> valueFactory, CancellationToken cancellationToken = default)
     {
+#if NET7_0_OR_GREATER
+        ArgumentNullException.ThrowIfNull(valueFactory);
+#else
+        if (valueFactory is null)
+            throw new ArgumentNullException(nameof(valueFactory));
+#endif
+
         cancellationToken.ThrowIfCancellationRequested();
 
         var workspace = GetWorkspacesOrThrowDisposedException().GetOrAdd(input, static _ => new());
@@ -136,6 +150,28 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
     /// </summary>
     /// <param name="input">The input to the processing logic.</param>
     /// <param name="valueFactory">The function used to generate a value for the input.</param>
+    /// <param name="timeout">
+    /// The amount of time to wait for the action to complete.
+    /// If the time span is 0 or less, the wait time is unlimited.
+    /// This is used to create a <see cref="CancellationToken"/> that is passed to <paramref name="input"/>.
+    /// </param>
+    /// <returns>A task that, upon completion, provides the result of processing.</returns>
+    /// <exception cref="OperationCanceledException">The time limit from <paramref name="timeout"/> was reached before completion.</exception>
+    public async Task<TValue> RunAsync(TKey input, Func<TKey, CancellationToken, Task<TValue>> valueFactory, TimeSpan timeout)
+    {
+        using var timeToken = new CancellationTokenSource();
+        timeToken.CancelAfter(timeout);
+        var cancellationToken = timeToken.Token;
+
+        return await RunAsync(input, valueFactory, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing the input.
+    /// The results of the first successful call to <paramref name="valueFactory"/> are shared with all concurrent requestors with the same input.
+    /// </summary>
+    /// <param name="input">The input to the processing logic.</param>
+    /// <param name="valueFactory">The function used to generate a value for the input.</param>
     /// <returns>A task that, upon completion, provides the result of processing.</returns>
     public TValue Run(TKey input, Func<TKey, TValue> valueFactory) => Run(input, valueFactory, default);
 
@@ -153,6 +189,13 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
     /// <exception cref="TimeoutException">The time limit indicated by <paramref name="timeout"/> has been exceeded.</exception>
     public TValue Run(TKey input, Func<TKey, TValue> valueFactory, TimeSpan timeout)
     {
+#if NET7_0_OR_GREATER
+        ArgumentNullException.ThrowIfNull(valueFactory);
+#else
+        if (valueFactory is null)
+            throw new ArgumentNullException(nameof(valueFactory));
+#endif
+
         var workspace = GetWorkspacesOrThrowDisposedException().GetOrAdd(input, static _ => new());
 
         if (timeout.Ticks <= 0)
@@ -185,7 +228,7 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
     }
 
     private ConcurrentDictionary<TKey, Workspace> GetWorkspacesOrThrowDisposedException()
-        => workspaces ?? throw new ObjectDisposedException(nameof(SharedAction));
+        => workspaces ?? throw new ObjectDisposedException(nameof(SharedAction<TKey, TValue>));
 
     /// <summary>
     /// Releases the unmanaged resources used by this instance, and optionally releases the managed resources.
@@ -196,7 +239,6 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
     /// </param>
     /// <remarks>
     /// This will break any waiting actions.
-    /// The base <see cref="SharedAction"/> doesn't have any unmanaged resources, but derived types may.
     /// </remarks>
     protected virtual void Dispose(bool disposing)
     {
