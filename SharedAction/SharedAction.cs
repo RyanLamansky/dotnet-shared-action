@@ -19,7 +19,7 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
 {
     private sealed class Workspace : SemaphoreSlim
     {
-        internal Workspace() : base(1, 1)
+        internal Workspace() : base(1, int.MaxValue)
         {
         }
 
@@ -68,27 +68,20 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
             await workspaceWait.ConfigureAwait(false);
         }
 
-        try
+        if (!workspace.HasResult)
         {
-            if (!workspace.HasResult)
+            try
             {
-                try
-                {
-                    workspace.Result = await valueFactory(input).ConfigureAwait(false);
-                }
-                finally
-                {
-                    GetWorkspacesOrThrowDisposedException().TryRemove(input, out _);
-                }
+                workspace.Result = await valueFactory(input).ConfigureAwait(false);
             }
+            finally
+            {
+                GetWorkspacesOrThrowDisposedException().TryRemove(input, out _);
+                workspace.Release(int.MaxValue);
+            }
+        }
 
-            return workspace.Result;
-        }
-        finally
-        {
-            if (workspace.Release() == 1)
-                workspace.Dispose();
-        }
+        return workspace.Result;
     }
 
     /// <summary>
@@ -121,27 +114,20 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
             await workspaceWait.ConfigureAwait(false);
         }
 
-        try
+        if (!workspace.HasResult)
         {
-            if (!workspace.HasResult)
+            try
             {
-                try
-                {
-                    workspace.Result = await valueFactory(input, cancellationToken).ConfigureAwait(false);
-                }
-                finally
-                {
-                    GetWorkspacesOrThrowDisposedException().TryRemove(input, out _);
-                }
+                workspace.Result = await valueFactory(input, cancellationToken).ConfigureAwait(false);
             }
+            finally
+            {
+                GetWorkspacesOrThrowDisposedException().TryRemove(input, out _);
+                workspace.Release(int.MaxValue);
+            }
+        }
 
-            return workspace.Result;
-        }
-        finally
-        {
-            if (workspace.Release() == 1)
-                workspace.Dispose();
-        }
+        return workspace.Result;
     }
 
     /// <summary>
@@ -204,27 +190,20 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
         if (!workspace.Wait(timeout))
             throw new TimeoutException();
 
-        try
+        if (!workspace.HasResult)
         {
-            if (!workspace.HasResult)
+            try
             {
-                try
-                {
-                    workspace.Result = valueFactory(input);
-                }
-                finally
-                {
-                    GetWorkspacesOrThrowDisposedException().TryRemove(input, out _);
-                }
+                workspace.Result = valueFactory(input);
             }
+            finally
+            {
+                GetWorkspacesOrThrowDisposedException().TryRemove(input, out _);
+                workspace.Release(int.MaxValue);
+            }
+        }
 
-            return workspace.Result;
-        }
-        finally
-        {
-            if (workspace.Release() == 1)
-                workspace.Dispose();
-        }
+        return workspace.Result;
     }
 
     private ConcurrentDictionary<TKey, Workspace> GetWorkspacesOrThrowDisposedException()
