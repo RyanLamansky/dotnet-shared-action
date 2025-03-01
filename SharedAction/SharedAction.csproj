@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <LangVersion>latest</LangVersion>
-    <TargetFrameworks>netstandard2.0;net8</TargetFrameworks>
+    <TargetFrameworks>netstandard2.0;net8;net9</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <GenerateDocumentationFile>True</GenerateDocumentationFile>
@@ -10,6 +10,7 @@
     <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
     <RootNamespace>SharedHelpers</RootNamespace>
     <AnalysisMode>All</AnalysisMode>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
 
 </Project>
