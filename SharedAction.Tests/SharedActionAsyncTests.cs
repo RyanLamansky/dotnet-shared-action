@@ -29,9 +29,28 @@ public static class SharedActionAsyncTests
             shared.RunAsync(0, _ => DelayAsync(1000, 2, results))
             );
 
-        var elapsed = Stopwatch.GetElapsedTime(started);
+        if (!Debugger.IsAttached) // The debugger could slow things down too much.
+            Assert.InRange(Stopwatch.GetElapsedTime(started), TimeSpan.FromSeconds(0), TimeSpan.FromSeconds(1.5));
 
-        Assert.InRange(elapsed, TimeSpan.FromSeconds(0), TimeSpan.FromSeconds(1.5));
+        Assert.StrictEqual(1, results.Count);
+    }
+
+    [Fact]
+    public static async Task TwoAwaitsOneRunCancelableAsync()
+    {
+        var shared = new SharedAction<int, int>();
+
+        var started = Stopwatch.GetTimestamp();
+        var results = new ConcurrentBag<int>();
+
+        await Task.WhenAll(
+            shared.RunAsync(0, _ => DelayAsync(1000, 1, results)),
+            shared.RunAsync(0, _ => DelayAsync(1000, 2, results))
+            );
+
+        if (!Debugger.IsAttached) // The debugger could slow things down too much.
+            Assert.InRange(Stopwatch.GetElapsedTime(started), TimeSpan.FromSeconds(0), TimeSpan.FromSeconds(1.5));
+
         Assert.StrictEqual(1, results.Count);
     }
 }

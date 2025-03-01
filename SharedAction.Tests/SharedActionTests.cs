@@ -38,9 +38,9 @@ public static class SharedActionTests
         thread1.Join();
         thread2.Join();
 
-        var elapsed = Stopwatch.GetElapsedTime(started);
+        if (!Debugger.IsAttached) // The debugger could slow things down too much.
+            Assert.InRange(Stopwatch.GetElapsedTime(started), TimeSpan.FromSeconds(0), TimeSpan.FromSeconds(1.5));
 
-        Assert.InRange(elapsed, TimeSpan.FromSeconds(0), TimeSpan.FromSeconds(1.5));
         Assert.StrictEqual(1, results.Count);
     }
 }
