@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Reflection;
+using System.Text;
 
 namespace SharedHelpers;
 
@@ -42,5 +44,58 @@ public static class SharedActionTests
             Assert.InRange(Stopwatch.GetElapsedTime(started), TimeSpan.FromSeconds(0), TimeSpan.FromSeconds(1.5));
 
         Assert.StrictEqual(1, results.Count);
+    }
+
+    private sealed class ComparableMethod(MethodInfo info) : IEquatable<ComparableMethod>
+    {
+        public readonly MethodInfo Info = info;
+
+        public override string ToString()
+        {
+            var builder = new StringBuilder();
+
+            builder.Append(Info.ReturnType.Name).Append(' ').Append(Info.Name).Append('(');
+
+            foreach (var parameter in Info.GetParameters())
+                builder.Append(parameter.ParameterType.Name).Append(' ').Append(parameter.Name).Append(',').Append(' ');
+
+            if (builder[^1] == ' ')
+                builder.Length -= 2;
+
+            builder.Append(')');
+
+            return builder.ToString();
+        }
+
+        public bool Equals(ComparableMethod? other)
+        {
+            ArgumentNullException.ThrowIfNull(other);
+
+            return this.ToString().Equals(other.ToString());
+        }
+
+        public override bool Equals(object? obj) => Equals(obj as ComparableMethod);
+
+        public override int GetHashCode() => ToString().GetHashCode();
+    }
+
+    [Fact]
+    public static void ApiConsistency()
+    {
+        var instanceMembers = typeof(SharedAction<,>)
+            .GetMethods()
+            .Where(m => m.Name.StartsWith("Run"))
+            .Select(m => new ComparableMethod(m))
+            .ToHashSet();
+
+        var sharedMembers = typeof(SharedAction)
+            .GetMethods()
+            .Where(m => m.Name.StartsWith("Run"))
+            .Select(m => new ComparableMethod(m))
+            .ToHashSet();
+
+        var missingMembers = instanceMembers.Except(sharedMembers).ToHashSet();
+
+        Assert.Empty(missingMembers);
     }
 }
