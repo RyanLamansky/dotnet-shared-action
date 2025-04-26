@@ -52,6 +52,22 @@ public static class SharedAction
     /// </summary>
     /// <param name="input">The input to the processing logic.</param>
     /// <param name="valueFactory">The function used to generate a value for the input.</param>
+    /// <param name="cancellationToken">
+    /// If provided, can be used to trigger cancellation of the operation.
+    /// It is used for both the internal semaphore and <paramref name="valueFactory"/>.
+    /// </param>
+    /// <returns>A task that, upon completion, provides the result of processing.</returns>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was triggered before completion.</exception>
+    public static Task<TValue> RunAsync<TKey, TValue>(TKey input, Func<TKey, TValue> valueFactory, CancellationToken cancellationToken = default)
+        where TKey : notnull
+        => Shared<TKey, TValue>.Instance.RunAsync(input, valueFactory, cancellationToken);
+
+    /// <summary>
+    /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing the input.
+    /// The results of the first successful call to <paramref name="valueFactory"/> are shared with all concurrent requestors with the same input.
+    /// </summary>
+    /// <param name="input">The input to the processing logic.</param>
+    /// <param name="valueFactory">The function used to generate a value for the input.</param>
     /// <param name="timeout">
     /// The amount of time to wait for the action to complete.
     /// If the time span is 0 or less, the wait time is unlimited.
@@ -159,6 +175,49 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
             try
             {
                 workspace.Result = await valueFactory(input).ConfigureAwait(false);
+            }
+            finally
+            {
+                GetWorkspacesOrThrowDisposedException().TryRemove(input, out _);
+                workspace.Release(int.MaxValue);
+            }
+        }
+
+        return workspace.Result;
+    }
+
+    /// <summary>
+    /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing the input.
+    /// The results of the first successful call to <paramref name="valueFactory"/> are shared with all concurrent requestors with the same input.
+    /// </summary>
+    /// <param name="input">The input to the processing logic.</param>
+    /// <param name="valueFactory">The function used to generate a value for the input.</param>
+    /// <param name="cancellationToken">
+    /// If provided, can be used to trigger cancellation of the operation.
+    /// It is used for both the internal semaphore and <paramref name="valueFactory"/>.
+    /// </param>
+    /// <returns>A task that, upon completion, provides the result of processing.</returns>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was triggered before completion.</exception>
+    public async Task<TValue> RunAsync(TKey input, Func<TKey, TValue> valueFactory, CancellationToken cancellationToken = default)
+    {
+#if NET7_0_OR_GREATER
+        ArgumentNullException.ThrowIfNull(valueFactory);
+#else
+        if (valueFactory is null)
+            throw new ArgumentNullException(nameof(valueFactory));
+#endif
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var workspace = GetWorkspacesOrThrowDisposedException().GetOrAdd(input, static _ => new());
+
+        await workspace.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!workspace.HasResult)
+        {
+            try
+            {
+                workspace.Result = valueFactory(input);
             }
             finally
             {
