@@ -6,7 +6,7 @@ The more concurrent requests, the greater the benefit: this solution thrives und
 
 This _is not_ a cache: once an action is completed, the results are shared with everyone supplying the same input and discarded.
 
-To get started, copy [SharedAction/SharedAction.cs](SharedAction/SharedAction.cs) directly into your project.
+It's recommended to copy the source for this repository into your own and adjust as needed.
 
 ## How to Use
 
