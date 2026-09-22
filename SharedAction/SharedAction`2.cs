@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 
 namespace SharedHelpers;
 
@@ -12,6 +12,12 @@ namespace SharedHelpers;
 /// <remarks>
 /// In general, instances of this type should be reused as long as shared action duplicate inputs are possible.
 /// For example, web applications using this to share API results should store the instance in a static readonly field.
+/// <para>
+/// When the action fails, the exception is shared with every waiter and the action is not retried.
+/// Concurrent requests get the same outcome, which is the point of the type.
+/// Cancellation is the one exception, because it describes the caller that ran the action rather than the action itself.
+/// In that case the action is handed to the next waiter.
+/// </para>
 /// </remarks>
 public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null)
     : IDisposable
@@ -24,7 +30,7 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
 
     /// <summary>
     /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing the input.
-    /// The results of the first successful call to <paramref name="valueFactory"/> are shared with all concurrent requestors with the same input.
+    /// The outcome of a single call to <paramref name="valueFactory"/>, whether a result or an exception, is shared with all concurrent requestors with the same input.
     /// </summary>
     /// <param name="input">The input to the processing logic.</param>
     /// <param name="valueFactory">The function used to generate a value for the input.</param>
@@ -42,25 +48,32 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
 
         await workspace.WaitAsync().ConfigureAwait(false);
 
-        if (!workspace.HasResult)
+        if (!workspace.HasOutcome)
         {
+            TValue result;
+
             try
             {
-                workspace.Result = await valueFactory(input).ConfigureAwait(false);
+                result = await valueFactory(input).ConfigureAwait(false);
             }
-            finally
+            catch (Exception failure)
             {
-                GetWorkspacesOrThrowDisposedException().TryRemove(input, out _);
-                workspace.Release(int.MaxValue);
+                workspace.SetFailure(failure);
+                Complete(input, workspace, outcomeStored: true);
+                throw;
             }
+
+            workspace.SetResult(result);
+
+            Complete(input, workspace, outcomeStored: true);
         }
 
-        return workspace.Result;
+        return workspace.GetOutcome();
     }
 
     /// <summary>
     /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing the input.
-    /// The results of the first successful call to <paramref name="valueFactory"/> are shared with all concurrent requestors with the same input.
+    /// The outcome of a single call to <paramref name="valueFactory"/>, whether a result or an exception, is shared with all concurrent requestors with the same input.
     /// </summary>
     /// <param name="input">The input to the processing logic.</param>
     /// <param name="valueFactory">The function used to generate a value for the input.</param>
@@ -85,25 +98,38 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
 
         await workspace.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-        if (!workspace.HasResult)
+        if (!workspace.HasOutcome)
         {
+            TValue result;
+
             try
             {
-                workspace.Result = valueFactory(input);
+                result = valueFactory(input);
             }
-            finally
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                GetWorkspacesOrThrowDisposedException().TryRemove(input, out _);
-                workspace.Release(int.MaxValue);
+                // This caller going away says nothing about the operation, so hand the work to the next waiter.
+                Complete(input, workspace, outcomeStored: false);
+                throw;
             }
+            catch (Exception failure)
+            {
+                workspace.SetFailure(failure);
+                Complete(input, workspace, outcomeStored: true);
+                throw;
+            }
+
+            workspace.SetResult(result);
+
+            Complete(input, workspace, outcomeStored: true);
         }
 
-        return workspace.Result;
+        return workspace.GetOutcome();
     }
 
     /// <summary>
     /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing the input.
-    /// The results of the first successful call to <paramref name="valueFactory"/> are shared with all concurrent requestors with the same input.
+    /// The outcome of a single call to <paramref name="valueFactory"/>, whether a result or an exception, is shared with all concurrent requestors with the same input.
     /// </summary>
     /// <param name="input">The input to the processing logic.</param>
     /// <param name="valueFactory">The function used to generate a value for the input.</param>
@@ -128,25 +154,38 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
 
         await workspace.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-        if (!workspace.HasResult)
+        if (!workspace.HasOutcome)
         {
+            TValue result;
+
             try
             {
-                workspace.Result = await valueFactory(input, cancellationToken).ConfigureAwait(false);
+                result = await valueFactory(input, cancellationToken).ConfigureAwait(false);
             }
-            finally
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                GetWorkspacesOrThrowDisposedException().TryRemove(input, out _);
-                workspace.Release(int.MaxValue);
+                // This caller going away says nothing about the operation, so hand the work to the next waiter.
+                Complete(input, workspace, outcomeStored: false);
+                throw;
             }
+            catch (Exception failure)
+            {
+                workspace.SetFailure(failure);
+                Complete(input, workspace, outcomeStored: true);
+                throw;
+            }
+
+            workspace.SetResult(result);
+
+            Complete(input, workspace, outcomeStored: true);
         }
 
-        return workspace.Result;
+        return workspace.GetOutcome();
     }
 
     /// <summary>
     /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing the input.
-    /// The results of the first successful call to <paramref name="valueFactory"/> are shared with all concurrent requestors with the same input.
+    /// The outcome of a single call to <paramref name="valueFactory"/>, whether a result or an exception, is shared with all concurrent requestors with the same input.
     /// </summary>
     /// <param name="input">The input to the processing logic.</param>
     /// <param name="valueFactory">The function used to generate a value for the input.</param>
@@ -166,7 +205,7 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
 
     /// <summary>
     /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing the input.
-    /// The results of the first successful call to <paramref name="valueFactory"/> are shared with all concurrent requestors with the same input.
+    /// The outcome of a single call to <paramref name="valueFactory"/>, whether a result or an exception, is shared with all concurrent requestors with the same input.
     /// </summary>
     /// <param name="input">The input to the processing logic.</param>
     /// <param name="valueFactory">The function used to generate a value for the input.</param>
@@ -175,7 +214,7 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
 
     /// <summary>
     /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing the input.
-    /// The results of the first successful call to <paramref name="valueFactory"/> are shared with all concurrent requestors with the same input.
+    /// The outcome of a single call to <paramref name="valueFactory"/>, whether a result or an exception, is shared with all concurrent requestors with the same input.
     /// </summary>
     /// <param name="input">The input to the processing logic.</param>
     /// <param name="valueFactory">The function used to generate a value for the input.</param>
@@ -202,24 +241,59 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
         if (!workspace.Wait(timeout))
             throw new TimeoutException();
 
-        if (!workspace.HasResult)
+        if (!workspace.HasOutcome)
         {
+            TValue result;
+
             try
             {
-                workspace.Result = valueFactory(input);
+                result = valueFactory(input);
             }
-            finally
+            catch (Exception failure)
             {
-                GetWorkspacesOrThrowDisposedException().TryRemove(input, out _);
-                workspace.Release(int.MaxValue);
+                workspace.SetFailure(failure);
+                Complete(input, workspace, outcomeStored: true);
+                throw;
             }
+
+            workspace.SetResult(result);
+
+            Complete(input, workspace, outcomeStored: true);
         }
 
-        return workspace.Result;
+        return workspace.GetOutcome();
     }
 
     private ConcurrentDictionary<TKey, Workspace<TValue>> GetWorkspacesOrThrowDisposedException()
         => workspaces ?? throw new ObjectDisposedException(nameof(SharedAction<TKey, TValue>));
+
+    /// <summary>
+    /// Removes the workspace from the active set and wakes the callers waiting on it.
+    /// </summary>
+    /// <param name="input">The key the workspace is registered under.</param>
+    /// <param name="workspace">The workspace to complete.</param>
+    /// <param name="outcomeStored">
+    /// When true, the workspace holds a result or a failure and every waiter is released at once.
+    /// When false, exactly one waiter is released to run the action.
+    /// Releasing more would exceed the semaphore's maximum count.
+    /// </param>
+    private void Complete(TKey input, Workspace<TValue> workspace, bool outcomeStored)
+    {
+        // Remove only this workspace: a retrying waiter must not evict a newer one.
+        // A disposed instance has nothing left to remove.
+        var workspaces = this.workspaces;
+
+        if (workspaces is not null)
+        {
+#if NETSTANDARD2_0
+            _ = ((ICollection<KeyValuePair<TKey, Workspace<TValue>>>)workspaces).Remove(new(input, workspace));
+#else
+            _ = workspaces.TryRemove(new KeyValuePair<TKey, Workspace<TValue>>(input, workspace));
+#endif
+        }
+
+        _ = workspace.Release(outcomeStored ? int.MaxValue : 1);
+    }
 
     /// <summary>
     /// Releases the unmanaged resources used by this instance, and optionally releases the managed resources.

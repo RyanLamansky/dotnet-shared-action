@@ -4,7 +4,7 @@ A simple C# class that allows multiple concurrent requests for the same operatio
 It's intended to be used in systems that expect real-time results but want to avoid the waste that comes with concurrent processing of the same input.
 The more concurrent requests, the greater the benefit: this solution thrives under intense load tests.
 
-This _is not_ a cache: once an action is completed, the results are shared with everyone supplying the same input and discarded.
+This _is not_ a cache: once an action is completed, the outcome is shared with everyone supplying the same input and discarded.
 
 It's recommended to copy the source for this repository into your own and adjust as needed.
 
@@ -51,3 +51,12 @@ app.MapGet("/api/realtimeinventory", async (string sku, int warehouseId, Cancell
     return result;
 });
 ```
+
+## Failures and Cancellation
+
+If the action throws, the exception is shared with every concurrent requestor and the action is not retried.
+Everyone asking for the same thing at the same time gets the same outcome, whether that outcome is a value or a failure.
+
+Cancellation is the one exception to that rule.
+The `CancellationToken` passed to `RunAsync` belongs to whichever caller happened to start the action.
+If that caller goes away, the action is handed to the next waiter and run again, so callers that cancelled nothing still get a real result.

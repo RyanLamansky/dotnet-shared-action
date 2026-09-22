@@ -5,9 +5,9 @@ namespace SharedHelpers;
 
 public static class SharedActionAsyncTests
 {
-    private async static Task<T> DelayAsync<T>(int millisecondsDelay, T value, ConcurrentBag<T> results)
+    private async static Task<T> DelayAsync<T>(int millisecondsDelay, T value, ConcurrentBag<T> results, CancellationToken cancellationToken = default)
     {
-        using (var delay = Task.Delay(millisecondsDelay))
+        using (var delay = Task.Delay(millisecondsDelay, cancellationToken))
         {
             await delay;
         }
@@ -38,14 +38,15 @@ public static class SharedActionAsyncTests
     [Fact]
     public static async Task TwoAwaitsOneRunCancelableAsync()
     {
-        var shared = new SharedAction<int, int>();
+        using var shared = new SharedAction<int, int>();
+        using var cancellation = new CancellationTokenSource();
 
         var started = Stopwatch.GetTimestamp();
         var results = new ConcurrentBag<int>();
 
         await Task.WhenAll(
-            shared.RunAsync(0, _ => DelayAsync(1000, 1, results)),
-            shared.RunAsync(0, _ => DelayAsync(1000, 2, results))
+            shared.RunAsync(0, (_, token) => DelayAsync(1000, 1, results, token), cancellation.Token),
+            shared.RunAsync(0, (_, token) => DelayAsync(1000, 2, results, token), cancellation.Token)
             );
 
         if (!Debugger.IsAttached) // The debugger could slow things down too much.

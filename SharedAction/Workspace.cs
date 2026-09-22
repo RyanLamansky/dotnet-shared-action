@@ -1,4 +1,6 @@
-﻿namespace SharedHelpers;
+﻿using System.Runtime.ExceptionServices;
+
+namespace SharedHelpers;
 
 internal sealed class Workspace<TValue> : SemaphoreSlim
 {
@@ -6,19 +8,28 @@ internal sealed class Workspace<TValue> : SemaphoreSlim
     {
     }
 
-    private readonly struct Container(TValue result)
+    private readonly struct Container(TValue result, ExceptionDispatchInfo? failure)
     {
-        public readonly bool HasResult = true; // False if the constructor doesn't run.
+        public readonly bool HasOutcome = true; // False if the constructor doesn't run.
         public readonly TValue Result = result; // Default of TValue if the constructor doesn't run.
+        public readonly ExceptionDispatchInfo? Failure = failure; // Null if the constructor doesn't run.
     }
 
-    private Container container; // Constructor isn't (initially) run, so .HasResult is false and .Result is the default for TValue.
+    private Container container; // Constructor isn't (initially) run, so .HasOutcome is false.
 
-    internal bool HasResult => container.HasResult;
+    internal bool HasOutcome => container.HasOutcome;
 
-    internal TValue Result
+    internal void SetResult(TValue result) => container = new(result, null);
+
+    /// <summary>
+    /// Stores a failure so every waiter observes the original exception instead of running the value factory again.
+    /// </summary>
+    internal void SetFailure(Exception failure) => container = new(default!, ExceptionDispatchInfo.Capture(failure));
+
+    internal TValue GetOutcome()
     {
-        get => container.Result;
-        set => container = new(value);
+        container.Failure?.Throw();
+
+        return container.Result;
     }
 }

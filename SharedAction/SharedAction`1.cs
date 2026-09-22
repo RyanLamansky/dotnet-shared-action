@@ -1,4 +1,4 @@
-﻿namespace SharedHelpers;
+namespace SharedHelpers;
 
 /// <summary>
 /// Shares the result of a single action among one or more concurrent requests.
@@ -8,6 +8,12 @@
 /// <remarks>
 /// Unlike <see cref="SharedAction{TKey, TValue}"/>, input variance is not handled internally.
 /// Intended as a private member of an instance that can be shared by multiple threads, wrapped by a public API.
+/// <para>
+/// When the action fails, the exception is shared with every waiter and the action is not retried.
+/// Concurrent requests get the same outcome, which is the point of the type.
+/// Cancellation is the one exception, because it describes the caller that ran the action rather than the action itself.
+/// In that case the action is handed to the next waiter.
+/// </para>
 /// </remarks>
 public class SharedAction<TValue> : IDisposable
 {
@@ -15,7 +21,7 @@ public class SharedAction<TValue> : IDisposable
 
     /// <summary>
     /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing.
-    /// The results of the first successful call to <paramref name="valueFactory"/> are shared with all concurrent requestors.
+    /// The outcome of a single call to <paramref name="valueFactory"/>, whether a result or an exception, is shared with all concurrent requestors.
     /// </summary>
     /// <param name="valueFactory">The function used to generate a value.</param>
     /// <returns>A task that, upon completion, provides the result of processing.</returns>
@@ -28,29 +34,36 @@ public class SharedAction<TValue> : IDisposable
             throw new ArgumentNullException(nameof(valueFactory));
 #endif
 
-        var workspace = this.workspace ??= new();
+        var workspace = GetOrCreateWorkspace();
 
         await workspace.WaitAsync().ConfigureAwait(false);
 
-        if (!workspace.HasResult)
+        if (!workspace.HasOutcome)
         {
+            TValue result;
+
             try
             {
-                workspace.Result = await valueFactory().ConfigureAwait(false);
+                result = await valueFactory().ConfigureAwait(false);
             }
-            finally
+            catch (Exception failure)
             {
-                this.workspace = null;
-                workspace.Release(int.MaxValue);
+                workspace.SetFailure(failure);
+                Complete(workspace, outcomeStored: true);
+                throw;
             }
+
+            workspace.SetResult(result);
+
+            Complete(workspace, outcomeStored: true);
         }
 
-        return workspace.Result;
+        return workspace.GetOutcome();
     }
 
     /// <summary>
     /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing.
-    /// The results of the first successful call to <paramref name="valueFactory"/> are shared with all concurrent requestors.
+    /// The outcome of a single call to <paramref name="valueFactory"/>, whether a result or an exception, is shared with all concurrent requestors.
     /// </summary>
     /// <param name="valueFactory">The function used to generate a value.</param>
     /// <param name="cancellationToken">
@@ -70,29 +83,42 @@ public class SharedAction<TValue> : IDisposable
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        var workspace = this.workspace ??= new();
+        var workspace = GetOrCreateWorkspace();
 
         await workspace.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-        if (!workspace.HasResult)
+        if (!workspace.HasOutcome)
         {
+            TValue result;
+
             try
             {
-                workspace.Result = valueFactory();
+                result = valueFactory();
             }
-            finally
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                this.workspace = null;
-                workspace.Release(int.MaxValue);
+                // This caller going away says nothing about the operation, so hand the work to the next waiter.
+                Complete(workspace, outcomeStored: false);
+                throw;
             }
+            catch (Exception failure)
+            {
+                workspace.SetFailure(failure);
+                Complete(workspace, outcomeStored: true);
+                throw;
+            }
+
+            workspace.SetResult(result);
+
+            Complete(workspace, outcomeStored: true);
         }
 
-        return workspace.Result;
+        return workspace.GetOutcome();
     }
 
     /// <summary>
     /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing.
-    /// The results of the first successful call to <paramref name="valueFactory"/> are shared with all concurrent requestors.
+    /// The outcome of a single call to <paramref name="valueFactory"/>, whether a result or an exception, is shared with all concurrent requestors.
     /// </summary>
     /// <param name="valueFactory">The function used to generate a value.</param>
     /// <param name="cancellationToken">
@@ -112,29 +138,42 @@ public class SharedAction<TValue> : IDisposable
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        var workspace = this.workspace ??= new();
+        var workspace = GetOrCreateWorkspace();
 
         await workspace.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-        if (!workspace.HasResult)
+        if (!workspace.HasOutcome)
         {
+            TValue result;
+
             try
             {
-                workspace.Result = await valueFactory(cancellationToken).ConfigureAwait(false);
+                result = await valueFactory(cancellationToken).ConfigureAwait(false);
             }
-            finally
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                this.workspace = null;
-                workspace.Release(int.MaxValue);
+                // This caller going away says nothing about the operation, so hand the work to the next waiter.
+                Complete(workspace, outcomeStored: false);
+                throw;
             }
+            catch (Exception failure)
+            {
+                workspace.SetFailure(failure);
+                Complete(workspace, outcomeStored: true);
+                throw;
+            }
+
+            workspace.SetResult(result);
+
+            Complete(workspace, outcomeStored: true);
         }
 
-        return workspace.Result;
+        return workspace.GetOutcome();
     }
 
     /// <summary>
     /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing.
-    /// The results of the first successful call to <paramref name="valueFactory"/> are shared with all concurrent requestors.
+    /// The outcome of a single call to <paramref name="valueFactory"/>, whether a result or an exception, is shared with all concurrent requestors.
     /// </summary>
     /// <param name="valueFactory">The function used to generate a value.</param>
     /// <param name="timeout">
@@ -153,7 +192,7 @@ public class SharedAction<TValue> : IDisposable
 
     /// <summary>
     /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing.
-    /// The results of the first successful call to <paramref name="valueFactory"/> are shared with all concurrent requestors.
+    /// The outcome of a single call to <paramref name="valueFactory"/>, whether a result or an exception, is shared with all concurrent requestors.
     /// </summary>
     /// <param name="valueFactory">The function used to generate a value.</param>
     /// <returns>A task that, upon completion, provides the result of processing.</returns>
@@ -161,7 +200,7 @@ public class SharedAction<TValue> : IDisposable
 
     /// <summary>
     /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing.
-    /// The results of the first successful call to <paramref name="valueFactory"/> are shared with all concurrent requestors.
+    /// The outcome of a single call to <paramref name="valueFactory"/>, whether a result or an exception, is shared with all concurrent requestors.
     /// </summary>
     /// <param name="valueFactory">The function used to generate a value.</param>
     /// <param name="timeout">
@@ -179,7 +218,7 @@ public class SharedAction<TValue> : IDisposable
             throw new ArgumentNullException(nameof(valueFactory));
 #endif
 
-        var workspace = this.workspace ??= new();
+        var workspace = GetOrCreateWorkspace();
 
         if (timeout.Ticks <= 0)
             timeout = TimeSpan.FromMilliseconds(-1);
@@ -187,20 +226,66 @@ public class SharedAction<TValue> : IDisposable
         if (!workspace.Wait(timeout))
             throw new TimeoutException();
 
-        if (!workspace.HasResult)
+        if (!workspace.HasOutcome)
         {
+            TValue result;
+
             try
             {
-                workspace.Result = valueFactory();
+                result = valueFactory();
             }
-            finally
+            catch (Exception failure)
             {
-                this.workspace = null;
-                workspace.Release(int.MaxValue);
+                workspace.SetFailure(failure);
+                Complete(workspace, outcomeStored: true);
+                throw;
             }
+
+            workspace.SetResult(result);
+
+            Complete(workspace, outcomeStored: true);
         }
 
-        return workspace.Result;
+        return workspace.GetOutcome();
+    }
+
+    /// <summary>
+    /// Gets the workspace shared by all current callers, creating it if there isn't one.
+    /// </summary>
+    private Workspace<TValue> GetOrCreateWorkspace()
+    {
+        var existing = Volatile.Read(ref workspace);
+
+        if (existing is not null)
+            return existing;
+
+        var created = new Workspace<TValue>();
+
+        existing = Interlocked.CompareExchange(ref workspace, created, null);
+
+        if (existing is null)
+            return created;
+
+        created.Dispose();
+
+        return existing;
+    }
+
+    /// <summary>
+    /// Clears the shared workspace and wakes the callers waiting on it.
+    /// </summary>
+    /// <param name="workspace">The workspace to complete.</param>
+    /// <param name="outcomeStored">
+    /// When true, the workspace holds a result or a failure and every waiter is released at once.
+    /// When false, exactly one waiter is released to run the action.
+    /// Releasing more would exceed the semaphore's maximum count.
+    /// </param>
+    private void Complete(Workspace<TValue> workspace, bool outcomeStored)
+    {
+        // Clear only this workspace: a retrying waiter must not discard a newer one.
+        _ = Interlocked.CompareExchange(ref this.workspace, null, workspace);
+
+        _ = workspace.Release(outcomeStored ? int.MaxValue : 1);
     }
 
     /// <summary>
@@ -218,13 +303,12 @@ public class SharedAction<TValue> : IDisposable
         if (!disposing)
             return;
 
-        var workspace = this.workspace;
+        var workspace = Interlocked.Exchange(ref this.workspace, null);
 
         if (workspace is null)
             return;
 
         workspace.Dispose();
-        this.workspace = null;
     }
 
     /// <inheritdoc />

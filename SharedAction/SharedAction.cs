@@ -21,7 +21,7 @@ public static class SharedAction
 
     /// <summary>
     /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing the input.
-    /// The results of the first successful call to <paramref name="valueFactory"/> are shared with all concurrent requestors with the same input.
+    /// The outcome of a single call to <paramref name="valueFactory"/>, whether a result or an exception, is shared with all concurrent requestors with the same input.
     /// </summary>
     /// <param name="input">The input to the processing logic.</param>
     /// <param name="valueFactory">The function used to generate a value for the input.</param>
@@ -32,7 +32,7 @@ public static class SharedAction
 
     /// <summary>
     /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing the input.
-    /// The results of the first successful call to <paramref name="valueFactory"/> are shared with all concurrent requestors with the same input.
+    /// The outcome of a single call to <paramref name="valueFactory"/>, whether a result or an exception, is shared with all concurrent requestors with the same input.
     /// </summary>
     /// <param name="input">The input to the processing logic.</param>
     /// <param name="valueFactory">The function used to generate a value for the input.</param>
@@ -48,7 +48,7 @@ public static class SharedAction
 
     /// <summary>
     /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing the input.
-    /// The results of the first successful call to <paramref name="valueFactory"/> are shared with all concurrent requestors with the same input.
+    /// The outcome of a single call to <paramref name="valueFactory"/>, whether a result or an exception, is shared with all concurrent requestors with the same input.
     /// </summary>
     /// <param name="input">The input to the processing logic.</param>
     /// <param name="valueFactory">The function used to generate a value for the input.</param>
@@ -64,7 +64,7 @@ public static class SharedAction
 
     /// <summary>
     /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing the input.
-    /// The results of the first successful call to <paramref name="valueFactory"/> are shared with all concurrent requestors with the same input.
+    /// The outcome of a single call to <paramref name="valueFactory"/>, whether a result or an exception, is shared with all concurrent requestors with the same input.
     /// </summary>
     /// <param name="input">The input to the processing logic.</param>
     /// <param name="valueFactory">The function used to generate a value for the input.</param>
@@ -81,7 +81,7 @@ public static class SharedAction
 
     /// <summary>
     /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing the input.
-    /// The results of the first successful call to <paramref name="valueFactory"/> are shared with all concurrent requestors with the same input.
+    /// The outcome of a single call to <paramref name="valueFactory"/>, whether a result or an exception, is shared with all concurrent requestors with the same input.
     /// </summary>
     /// <param name="input">The input to the processing logic.</param>
     /// <param name="valueFactory">The function used to generate a value for the input.</param>
@@ -92,7 +92,7 @@ public static class SharedAction
 
     /// <summary>
     /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing the input.
-    /// The results of the first successful call to <paramref name="valueFactory"/> are shared with all concurrent requestors with the same input.
+    /// The outcome of a single call to <paramref name="valueFactory"/>, whether a result or an exception, is shared with all concurrent requestors with the same input.
     /// </summary>
     /// <param name="input">The input to the processing logic.</param>
     /// <param name="valueFactory">The function used to generate a value for the input.</param>
