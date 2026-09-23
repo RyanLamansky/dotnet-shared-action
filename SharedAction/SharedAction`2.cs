@@ -1,4 +1,5 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 
 namespace SharedHelpers;
 
@@ -15,8 +16,10 @@ namespace SharedHelpers;
 /// <para>
 /// When the action fails, the exception is shared with every waiter and the action is not retried.
 /// Concurrent requests get the same outcome, which is the point of the type.
-/// Cancellation is the one exception, because it describes the caller that ran the action rather than the action itself.
-/// In that case the action is handed to the next waiter.
+/// </para>
+/// <para>
+/// A caller that cancels abandons only its own wait.
+/// The action carries on for everyone still waiting, and is cancelled once the last of them has gone.
 /// </para>
 /// </remarks>
 public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null)
@@ -24,9 +27,9 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
     where TKey : notnull
 {
     /// <summary>
-    /// Tracks active activities. When null, the object is disposed.
+    /// Tracks actions that are currently running. When null, the object is disposed.
     /// </summary>
-    private ConcurrentDictionary<TKey, Workspace<TValue>>? workspaces = new(comparer);
+    private ConcurrentDictionary<TKey, Attempt<TValue>>? attempts = new(comparer);
 
     /// <summary>
     /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing the input.
@@ -35,35 +38,14 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
     /// <param name="input">The input to the processing logic.</param>
     /// <param name="valueFactory">The function used to generate a value for the input.</param>
     /// <returns>A task that, upon completion, provides the result of processing.</returns>
-    public async Task<TValue> RunAsync(TKey input, Func<TKey, Task<TValue>> valueFactory)
+    public Task<TValue> RunAsync(TKey input, Func<TKey, Task<TValue>> valueFactory)
     {
         ArgumentNullException.ThrowIfNull(valueFactory);
 
-        var workspace = GetWorkspacesOrThrowDisposedException().GetOrAdd(input, static _ => new());
+        if (TryStart(input, out var attempt))
+            _ = LeadAsync(input, (key, _) => valueFactory(key), attempt);
 
-        await workspace.WaitAsync().ConfigureAwait(false);
-
-        if (!workspace.HasOutcome)
-        {
-            TValue result;
-
-            try
-            {
-                result = await valueFactory(input).ConfigureAwait(false);
-            }
-            catch (Exception failure)
-            {
-                workspace.SetFailure(failure);
-                Complete(input, workspace, outcomeStored: true);
-                throw;
-            }
-
-            workspace.SetResult(result);
-
-            Complete(input, workspace, outcomeStored: true);
-        }
-
-        return workspace.GetOutcome();
+        return AwaitAsync(attempt, default);
     }
 
     /// <summary>
@@ -73,48 +55,22 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
     /// <param name="input">The input to the processing logic.</param>
     /// <param name="valueFactory">The function used to generate a value for the input.</param>
     /// <param name="cancellationToken">
-    /// If provided, can be used to trigger cancellation of the operation.
-    /// It is used for both the internal semaphore and <paramref name="valueFactory"/>.
+    /// If provided, abandons this call's wait for the action.
+    /// The action itself continues for any other caller still waiting.
     /// </param>
     /// <returns>A task that, upon completion, provides the result of processing.</returns>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was triggered before completion.</exception>
-    public async Task<TValue> RunAsync(TKey input, Func<TKey, TValue> valueFactory, CancellationToken cancellationToken = default)
+    public Task<TValue> RunAsync(TKey input, Func<TKey, TValue> valueFactory, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(valueFactory);
 
-        cancellationToken.ThrowIfCancellationRequested();
+        if (cancellationToken.IsCancellationRequested)
+            return Task.FromCanceled<TValue>(cancellationToken);
 
-        var workspace = GetWorkspacesOrThrowDisposedException().GetOrAdd(input, static _ => new());
+        if (TryStart(input, out var attempt))
+            Lead(input, valueFactory, attempt);
 
-        await workspace.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-        if (!workspace.HasOutcome)
-        {
-            TValue result;
-
-            try
-            {
-                result = valueFactory(input);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                // This caller going away says nothing about the operation, so hand the work to the next waiter.
-                Complete(input, workspace, outcomeStored: false);
-                throw;
-            }
-            catch (Exception failure)
-            {
-                workspace.SetFailure(failure);
-                Complete(input, workspace, outcomeStored: true);
-                throw;
-            }
-
-            workspace.SetResult(result);
-
-            Complete(input, workspace, outcomeStored: true);
-        }
-
-        return workspace.GetOutcome();
+        return AwaitAsync(attempt, cancellationToken);
     }
 
     /// <summary>
@@ -124,48 +80,22 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
     /// <param name="input">The input to the processing logic.</param>
     /// <param name="valueFactory">The function used to generate a value for the input.</param>
     /// <param name="cancellationToken">
-    /// If provided, can be used to trigger cancellation of the operation.
-    /// It is used for both the internal semaphore and <paramref name="valueFactory"/>.
+    /// If provided, abandons this call's wait for the action.
+    /// The action itself continues for any other caller still waiting.
     /// </param>
     /// <returns>A task that, upon completion, provides the result of processing.</returns>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was triggered before completion.</exception>
-    public async Task<TValue> RunAsync(TKey input, Func<TKey, CancellationToken, Task<TValue>> valueFactory, CancellationToken cancellationToken = default)
+    public Task<TValue> RunAsync(TKey input, Func<TKey, CancellationToken, Task<TValue>> valueFactory, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(valueFactory);
 
-        cancellationToken.ThrowIfCancellationRequested();
+        if (cancellationToken.IsCancellationRequested)
+            return Task.FromCanceled<TValue>(cancellationToken);
 
-        var workspace = GetWorkspacesOrThrowDisposedException().GetOrAdd(input, static _ => new());
+        if (TryStart(input, out var attempt))
+            _ = LeadAsync(input, valueFactory, attempt);
 
-        await workspace.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-        if (!workspace.HasOutcome)
-        {
-            TValue result;
-
-            try
-            {
-                result = await valueFactory(input, cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                // This caller going away says nothing about the operation, so hand the work to the next waiter.
-                Complete(input, workspace, outcomeStored: false);
-                throw;
-            }
-            catch (Exception failure)
-            {
-                workspace.SetFailure(failure);
-                Complete(input, workspace, outcomeStored: true);
-                throw;
-            }
-
-            workspace.SetResult(result);
-
-            Complete(input, workspace, outcomeStored: true);
-        }
-
-        return workspace.GetOutcome();
+        return AwaitAsync(attempt, cancellationToken);
     }
 
     /// <summary>
@@ -175,99 +105,198 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
     /// <param name="input">The input to the processing logic.</param>
     /// <param name="valueFactory">The function used to generate a value for the input.</param>
     /// <param name="timeout">
-    /// The amount of time to wait for the action to complete.
+    /// The amount of time this call waits for the action to complete.
     /// If the time span is 0 or less, the wait time is unlimited.
-    /// This is used to create a <see cref="CancellationToken"/> that is passed to <paramref name="valueFactory"/>.
+    /// The action itself continues for any other caller still waiting.
     /// </param>
     /// <returns>A task that, upon completion, provides the result of processing.</returns>
     /// <exception cref="OperationCanceledException">The time limit from <paramref name="timeout"/> was reached before completion.</exception>
     public async Task<TValue> RunAsync(TKey input, Func<TKey, CancellationToken, Task<TValue>> valueFactory, TimeSpan timeout)
     {
-        using var timeToken = new CancellationTokenSource(timeout);
+        using var expiry = new CancellationTokenSource(timeout.Ticks <= 0 ? Timeout.InfiniteTimeSpan : timeout);
 
-        return await RunAsync(input, valueFactory, timeToken.Token).ConfigureAwait(false);
+        return await RunAsync(input, valueFactory, expiry.Token).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing the input.
+    /// Provides the result of processing the input.
     /// The outcome of a single call to <paramref name="valueFactory"/>, whether a result or an exception, is shared with all concurrent requestors with the same input.
     /// </summary>
     /// <param name="input">The input to the processing logic.</param>
     /// <param name="valueFactory">The function used to generate a value for the input.</param>
-    /// <returns>A task that, upon completion, provides the result of processing.</returns>
+    /// <returns>The result of processing.</returns>
     public TValue Run(TKey input, Func<TKey, TValue> valueFactory) => Run(input, valueFactory, default);
 
     /// <summary>
-    /// Provides a <see cref="Task{T}"/> of type <typeparamref name="TValue"/> that contains the result of processing the input.
+    /// Provides the result of processing the input.
     /// The outcome of a single call to <paramref name="valueFactory"/>, whether a result or an exception, is shared with all concurrent requestors with the same input.
     /// </summary>
     /// <param name="input">The input to the processing logic.</param>
     /// <param name="valueFactory">The function used to generate a value for the input.</param>
     /// <param name="timeout">
-    /// The amount of time to wait before entering the semaphore.
+    /// The amount of time this call waits for the action to complete.
     /// If the time span is 0 (the default) or less, the wait time is unlimited.
     /// </param>
-    /// <returns>A task that, upon completion, provides the result of processing.</returns>
+    /// <returns>The result of processing.</returns>
     /// <exception cref="TimeoutException">The time limit indicated by <paramref name="timeout"/> has been exceeded.</exception>
+    /// <remarks>
+    /// A caller that joins an action started by an asynchronous caller blocks its thread until that action completes.
+    /// </remarks>
     public TValue Run(TKey input, Func<TKey, TValue> valueFactory, TimeSpan timeout)
     {
         ArgumentNullException.ThrowIfNull(valueFactory);
 
-        var workspace = GetWorkspacesOrThrowDisposedException().GetOrAdd(input, static _ => new());
+        if (TryStart(input, out var attempt))
+            Lead(input, valueFactory, attempt);
 
-        if (timeout.Ticks <= 0)
-            timeout = TimeSpan.FromMilliseconds(-1);
-
-        if (!workspace.Wait(timeout))
-            throw new TimeoutException();
-
-        if (!workspace.HasOutcome)
+        try
         {
-            TValue result;
-
             try
             {
-                result = valueFactory(input);
+                if (!attempt.Task.Wait(timeout.Ticks <= 0 ? Timeout.InfiniteTimeSpan : timeout))
+                    throw new TimeoutException();
             }
-            catch (Exception failure)
+            catch (AggregateException)
             {
-                workspace.SetFailure(failure);
-                Complete(input, workspace, outcomeStored: true);
-                throw;
+                // The action failed, and its original exception is rethrown unwrapped below.
             }
 
-            workspace.SetResult(result);
-
-            Complete(input, workspace, outcomeStored: true);
+            return attempt.Task.GetAwaiter().GetResult();
         }
-
-        return workspace.GetOutcome();
+        finally
+        {
+            attempt.Leave();
+        }
     }
-
-    private ConcurrentDictionary<TKey, Workspace<TValue>> GetWorkspacesOrThrowDisposedException()
-        => workspaces ?? throw new ObjectDisposedException(nameof(SharedAction<TKey, TValue>));
 
     /// <summary>
-    /// Removes the workspace from the active set and wakes the callers waiting on it.
+    /// Joins the action already running for this input, or prepares a new one.
     /// </summary>
-    /// <param name="input">The key the workspace is registered under.</param>
-    /// <param name="workspace">The workspace to complete.</param>
-    /// <param name="outcomeStored">
-    /// When true, the workspace holds a result or a failure and every waiter is released at once.
-    /// When false, exactly one waiter is released to run the action.
-    /// Releasing more would exceed the semaphore's maximum count.
-    /// </param>
-    private void Complete(TKey input, Workspace<TValue> workspace, bool outcomeStored)
+    /// <param name="input">The input to the processing logic.</param>
+    /// <param name="attempt">The attempt this call waits on.</param>
+    /// <returns>True when this caller must run the action itself.</returns>
+    private bool TryStart(TKey input, out Attempt<TValue> attempt)
     {
-        // Remove only this workspace: a retrying waiter must not evict a newer one.
-        // A disposed instance has nothing left to remove.
-        var workspaces = this.workspaces;
+        var attempts = GetAttemptsOrThrowDisposedException();
 
-        if (workspaces is not null)
-            _ = workspaces.TryRemove(new KeyValuePair<TKey, Workspace<TValue>>(input, workspace));
+        while (true)
+        {
+            // Joining an action that is already running costs nothing but the lookup.
+            if (attempts.TryGetValue(input, out var running))
+            {
+                if (running.TryJoin())
+                {
+                    attempt = running;
+                    return false;
+                }
 
-        _ = workspace.Release(outcomeStored ? int.MaxValue : 1);
+                // Every caller gave up on that action, so retire it and look again.
+                Remove(input, running);
+                continue;
+            }
+
+            var starting = new Attempt<TValue>();
+            var current = attempts.GetOrAdd(input, starting);
+
+            if (ReferenceEquals(current, starting))
+            {
+                attempt = starting;
+                return true;
+            }
+
+            starting.Dispose();
+
+            if (current.TryJoin())
+            {
+                attempt = current;
+                return false;
+            }
+
+            Remove(input, current);
+        }
     }
+
+    /// <summary>
+    /// Waits for the shared outcome, leaving the attempt however this call departs.
+    /// </summary>
+    private static async Task<TValue> AwaitAsync(Attempt<TValue> attempt, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await (cancellationToken.CanBeCanceled ? attempt.Task.WaitAsync(cancellationToken) : attempt.Task).ConfigureAwait(false);
+        }
+        finally
+        {
+            attempt.Leave();
+        }
+    }
+
+    /// <summary>
+    /// Runs the action and publishes its outcome to every caller waiting on this attempt.
+    /// </summary>
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The leader shares whatever the action produces, including any failure, with every caller waiting on it.")]
+    private async Task LeadAsync(TKey input, Func<TKey, CancellationToken, Task<TValue>> valueFactory, Attempt<TValue> attempt)
+    {
+        TValue result;
+
+        try
+        {
+            result = await valueFactory(input, attempt.CancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception failure)
+        {
+            Publish(input, attempt, failure);
+            return;
+        }
+
+        Publish(input, attempt, result);
+    }
+
+    /// <inheritdoc cref="LeadAsync" />
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The leader shares whatever the action produces, including any failure, with every caller waiting on it.")]
+    private void Lead(TKey input, Func<TKey, TValue> valueFactory, Attempt<TValue> attempt)
+    {
+        TValue result;
+
+        try
+        {
+            result = valueFactory(input);
+        }
+        catch (Exception failure)
+        {
+            Publish(input, attempt, failure);
+            return;
+        }
+
+        Publish(input, attempt, result);
+    }
+
+    private void Publish(TKey input, Attempt<TValue> attempt, TValue result)
+    {
+        Remove(input, attempt);
+        attempt.SetResult(result);
+        attempt.ReleaseOwner();
+    }
+
+    private void Publish(TKey input, Attempt<TValue> attempt, Exception failure)
+    {
+        Remove(input, attempt);
+        attempt.SetFailure(failure);
+        attempt.ReleaseOwner();
+    }
+
+    private void Remove(TKey input, Attempt<TValue> attempt)
+    {
+        // Remove only this attempt, and only before its outcome is published.
+        // A later caller then starts a new action instead of joining a finished one.
+        var attempts = this.attempts;
+
+        if (attempts is not null)
+            _ = attempts.TryRemove(new KeyValuePair<TKey, Attempt<TValue>>(input, attempt));
+    }
+
+    private ConcurrentDictionary<TKey, Attempt<TValue>> GetAttemptsOrThrowDisposedException()
+        => attempts ?? throw new ObjectDisposedException(nameof(SharedAction<TKey, TValue>));
 
     /// <summary>
     /// Releases the unmanaged resources used by this instance, and optionally releases the managed resources.
@@ -277,22 +306,20 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
     /// false to release only unmanaged resources.
     /// </param>
     /// <remarks>
-    /// This will break any waiting actions.
+    /// This cancels any action that is still running.
     /// </remarks>
     protected virtual void Dispose(bool disposing)
     {
         if (!disposing)
             return;
 
-        var workspaces = this.workspaces;
+        var attempts = Interlocked.Exchange(ref this.attempts, null);
 
-        if (workspaces is null)
+        if (attempts is null)
             return;
 
-        this.workspaces = null;
-
-        foreach (var workspace in workspaces.Values)
-            workspace.Dispose();
+        foreach (var attempt in attempts.Values)
+            attempt.Abort();
     }
 
     /// <inheritdoc />

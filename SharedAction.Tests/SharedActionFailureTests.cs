@@ -1,4 +1,3 @@
-
 namespace SharedHelpers;
 
 /// <summary>
@@ -38,6 +37,14 @@ public static class SharedActionFailureTests
         while (Interlocked.CompareExchange(ref peak, value, seen) != seen);
     }
 
+    /// <summary>
+    /// Fails the test rather than hanging the whole run when a shared action never settles.
+    /// </summary>
+    private static Task OrTimeout(Task task) => task.WaitAsync(TimeSpan.FromSeconds(30));
+
+    /// <inheritdoc cref="OrTimeout(Task)" />
+    private static Task<T> OrTimeout<T>(Task<T> task) => task.WaitAsync(TimeSpan.FromSeconds(30));
+
     [Fact]
     public static async Task FailureIsSharedWithAllWaitersAsync()
     {
@@ -59,7 +66,7 @@ public static class SharedActionFailureTests
 
         var leader = shared.RunAsync(0, Factory);
 
-        await gate.Entered;
+        await OrTimeout(gate.Entered);
 
         var followers = Enumerable.Range(0, 4).Select(_ => shared.RunAsync(0, Factory)).ToArray();
 
@@ -77,60 +84,142 @@ public static class SharedActionFailureTests
     }
 
     [Fact]
-    public static async Task CancellationIsNotSharedAsync()
+    public static async Task AbandonedWaiterDoesNotDisturbTheActionAsync()
     {
         using var shared = new SharedAction<int, int>();
 
         var gate = new Gate();
         var calls = 0;
-        var active = 0;
-        var peak = 0;
 
         async Task<int> Factory(int input, CancellationToken cancellationToken)
         {
-            RecordPeak(ref peak, Interlocked.Increment(ref active));
+            _ = Interlocked.Increment(ref calls);
+
+            gate.SignalEntered();
+
+            await gate.Wait().ConfigureAwait(false);
+
+            return 42;
+        }
+
+        // The caller that starts the action is the one that has waited longest,
+        // so it is also the one most likely to give up first.
+        using var leaverCancellation = new CancellationTokenSource();
+
+        var leaver = shared.RunAsync(0, Factory, leaverCancellation.Token);
+
+        await OrTimeout(gate.Entered);
+
+        var stayers = Enumerable.Range(0, 3).Select(_ => shared.RunAsync(0, Factory)).ToArray();
+
+        await Task.Delay(250); // Let the other callers join the action.
+
+        await leaverCancellation.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => OrTimeout(leaver));
+
+        gate.Release();
+
+        // The action carries on for the callers that are still waiting, and is never restarted.
+        foreach (var stayer in stayers)
+            Assert.StrictEqual(42, await OrTimeout(stayer));
+
+        Assert.StrictEqual(1, calls);
+    }
+
+    [Fact]
+    public static async Task ActionIsCancelledWhenEveryWaiterAbandonsAsync()
+    {
+        using var shared = new SharedAction<int, int>();
+
+        var gate = new Gate();
+        var cancelledInsideFactory = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async Task<int> Factory(int input, CancellationToken cancellationToken)
+        {
+            gate.SignalEntered();
 
             try
             {
-                if (Interlocked.Increment(ref calls) == 1)
-                {
-                    gate.SignalEntered();
-
-                    // The leader waits until its own caller goes away.
-                    await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
-                }
-
-                return 42;
+                await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
             }
-            finally
+            catch (OperationCanceledException)
             {
-                _ = Interlocked.Decrement(ref active);
+                cancelledInsideFactory.TrySetResult();
+                throw;
             }
+
+            return 42;
         }
 
-        // Only the leader goes away, simulating a disconnected HTTP client.
-        using var leaderCancellation = new CancellationTokenSource();
+        var sources = Enumerable.Range(0, 3).Select(_ => new CancellationTokenSource()).ToArray();
 
-        var leader = shared.RunAsync(0, Factory, leaderCancellation.Token);
+        try
+        {
+            var first = shared.RunAsync(0, Factory, sources[0].Token);
 
-        await gate.Entered;
+            await OrTimeout(gate.Entered);
 
-        var followers = Enumerable.Range(0, 3).Select(_ => shared.RunAsync(0, Factory)).ToArray();
+            var rest = sources.Skip(1).Select(s => shared.RunAsync(0, Factory, s.Token)).ToArray();
 
-        await Task.Delay(250); // Let the followers queue on the workspace.
+            await Task.Delay(250); // Let the other callers join the action.
 
-        await leaderCancellation.CancelAsync();
+            foreach (var source in sources)
+                await source.CancelAsync();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => leader);
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => OrTimeout(first));
 
-        // A caller that cancelled nothing must still get a real answer.
-        // One caller's cancellation describes that caller's request, not the outcome of the shared operation.
-        foreach (var follower in followers)
-            Assert.StrictEqual(42, await follower);
+            foreach (var caller in rest)
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => OrTimeout(caller));
 
-        // Exactly one waiter picked the work back up, and never alongside another.
-        Assert.StrictEqual(2, calls);
-        Assert.StrictEqual(1, peak);
+            // Nobody is left to want the result, so the work itself is shed rather than run to completion.
+            await cancelledInsideFactory.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            foreach (var source in sources)
+                source.Dispose();
+        }
+    }
+
+    [Fact]
+    public static async Task LoneCallerCancellingStopsTheActionAsync()
+    {
+        using var shared = new SharedAction<int, int>();
+
+        var gate = new Gate();
+        var cancelledInsideFactory = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async Task<int> Factory(int input, CancellationToken cancellationToken)
+        {
+            gate.SignalEntered();
+
+            try
+            {
+                await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                cancelledInsideFactory.TrySetResult();
+                throw;
+            }
+
+            return 42;
+        }
+
+        using var only = new CancellationTokenSource();
+
+        var caller = shared.RunAsync(0, Factory, only.Token);
+
+        await OrTimeout(gate.Entered);
+
+        await only.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => OrTimeout(caller));
+
+        // Under light load most inputs have a single interested caller, so this is the ordinary case.
+        // One caller leaving is the last one leaving, and the action must stop with it.
+        await OrTimeout(cancelledInsideFactory.Task);
     }
 
     [Fact]

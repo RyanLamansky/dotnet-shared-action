@@ -57,6 +57,5 @@ app.MapGet("/api/realtimeinventory", async (string sku, int warehouseId, Cancell
 If the action throws, the exception is shared with every concurrent requestor and the action is not retried.
 Everyone asking for the same thing at the same time gets the same outcome, whether that outcome is a value or a failure.
 
-Cancellation is the one exception to that rule.
-The `CancellationToken` passed to `RunAsync` belongs to whichever caller happened to start the action.
-If that caller goes away, the action is handed to the next waiter and run again, so callers that cancelled nothing still get a real result.
+A caller that cancels abandons only its own wait.
+The action carries on for everyone still waiting, and is cancelled only once the last of them has given up.

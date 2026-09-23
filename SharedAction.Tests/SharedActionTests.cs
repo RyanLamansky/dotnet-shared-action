@@ -98,4 +98,48 @@ public static class SharedActionTests
 
         Assert.Empty(missingMembers);
     }
+
+    [Fact]
+    public static async Task SyncCallerJoinsAsyncActionAsync()
+    {
+        using var shared = new SharedAction<int, int>();
+
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+
+        var leader = shared.RunAsync(0, async (int _, CancellationToken cancellationToken) =>
+        {
+            _ = Interlocked.Increment(ref calls);
+
+            started.TrySetResult();
+
+            await Task.Delay(200, cancellationToken).ConfigureAwait(false);
+
+            return 7;
+        });
+
+        await started.Task;
+
+        // A synchronous caller blocks on the action that an asynchronous caller started.
+        var joined = await Task.Run(() => shared.Run(0, _ =>
+        {
+            _ = Interlocked.Increment(ref calls);
+
+            return 99;
+        })).WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.StrictEqual(7, joined);
+        Assert.StrictEqual(7, await leader);
+        Assert.StrictEqual(1, calls);
+    }
+
+    [Fact]
+    public static void SyncCallerSeesTheOriginalFailure()
+    {
+        using var shared = new SharedAction<int, int>();
+
+        // Blocking on a task surfaces failures wrapped, so the original must be unwrapped for the caller.
+        _ = Assert.Throws<InvalidOperationException>(
+            () => shared.Run(0, _ => throw new InvalidOperationException("backend down")));
+    }
 }
