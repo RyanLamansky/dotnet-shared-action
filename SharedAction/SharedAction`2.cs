@@ -37,12 +37,7 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
     /// <returns>A task that, upon completion, provides the result of processing.</returns>
     public async Task<TValue> RunAsync(TKey input, Func<TKey, Task<TValue>> valueFactory)
     {
-#if NET7_0_OR_GREATER
         ArgumentNullException.ThrowIfNull(valueFactory);
-#else
-        if (valueFactory is null)
-            throw new ArgumentNullException(nameof(valueFactory));
-#endif
 
         var workspace = GetWorkspacesOrThrowDisposedException().GetOrAdd(input, static _ => new());
 
@@ -85,12 +80,7 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was triggered before completion.</exception>
     public async Task<TValue> RunAsync(TKey input, Func<TKey, TValue> valueFactory, CancellationToken cancellationToken = default)
     {
-#if NET7_0_OR_GREATER
         ArgumentNullException.ThrowIfNull(valueFactory);
-#else
-        if (valueFactory is null)
-            throw new ArgumentNullException(nameof(valueFactory));
-#endif
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -141,12 +131,7 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was triggered before completion.</exception>
     public async Task<TValue> RunAsync(TKey input, Func<TKey, CancellationToken, Task<TValue>> valueFactory, CancellationToken cancellationToken = default)
     {
-#if NET7_0_OR_GREATER
         ArgumentNullException.ThrowIfNull(valueFactory);
-#else
-        if (valueFactory is null)
-            throw new ArgumentNullException(nameof(valueFactory));
-#endif
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -226,12 +211,7 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
     /// <exception cref="TimeoutException">The time limit indicated by <paramref name="timeout"/> has been exceeded.</exception>
     public TValue Run(TKey input, Func<TKey, TValue> valueFactory, TimeSpan timeout)
     {
-#if NET7_0_OR_GREATER
         ArgumentNullException.ThrowIfNull(valueFactory);
-#else
-        if (valueFactory is null)
-            throw new ArgumentNullException(nameof(valueFactory));
-#endif
 
         var workspace = GetWorkspacesOrThrowDisposedException().GetOrAdd(input, static _ => new());
 
@@ -284,13 +264,7 @@ public class SharedAction<TKey, TValue>(IEqualityComparer<TKey>? comparer = null
         var workspaces = this.workspaces;
 
         if (workspaces is not null)
-        {
-#if NETSTANDARD2_0
-            _ = ((ICollection<KeyValuePair<TKey, Workspace<TValue>>>)workspaces).Remove(new(input, workspace));
-#else
             _ = workspaces.TryRemove(new KeyValuePair<TKey, Workspace<TValue>>(input, workspace));
-#endif
-        }
 
         _ = workspace.Release(outcomeStored ? int.MaxValue : 1);
     }

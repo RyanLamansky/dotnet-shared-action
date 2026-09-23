@@ -27,12 +27,7 @@ public class SharedAction<TValue> : IDisposable
     /// <returns>A task that, upon completion, provides the result of processing.</returns>
     public async Task<TValue> RunAsync(Func<Task<TValue>> valueFactory)
     {
-#if NET7_0_OR_GREATER
         ArgumentNullException.ThrowIfNull(valueFactory);
-#else
-        if (valueFactory is null)
-            throw new ArgumentNullException(nameof(valueFactory));
-#endif
 
         var workspace = GetOrCreateWorkspace();
 
@@ -74,12 +69,7 @@ public class SharedAction<TValue> : IDisposable
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was triggered before completion.</exception>
     public async Task<TValue> RunAsync(Func<TValue> valueFactory, CancellationToken cancellationToken = default)
     {
-#if NET7_0_OR_GREATER
         ArgumentNullException.ThrowIfNull(valueFactory);
-#else
-        if (valueFactory is null)
-            throw new ArgumentNullException(nameof(valueFactory));
-#endif
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -129,12 +119,7 @@ public class SharedAction<TValue> : IDisposable
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was triggered before completion.</exception>
     public async Task<TValue> RunAsync(Func<CancellationToken, Task<TValue>> valueFactory, CancellationToken cancellationToken = default)
     {
-#if NET7_0_OR_GREATER
         ArgumentNullException.ThrowIfNull(valueFactory);
-#else
-        if (valueFactory is null)
-            throw new ArgumentNullException(nameof(valueFactory));
-#endif
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -211,12 +196,7 @@ public class SharedAction<TValue> : IDisposable
     /// <exception cref="TimeoutException">The time limit indicated by <paramref name="timeout"/> has been exceeded.</exception>
     public TValue Run(Func<TValue> valueFactory, TimeSpan timeout)
     {
-#if NET7_0_OR_GREATER
         ArgumentNullException.ThrowIfNull(valueFactory);
-#else
-        if (valueFactory is null)
-            throw new ArgumentNullException(nameof(valueFactory));
-#endif
 
         var workspace = GetOrCreateWorkspace();
 
