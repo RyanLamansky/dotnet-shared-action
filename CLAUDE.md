@@ -4,7 +4,7 @@ This repo contains a small project providing a simple .NET API that allows multi
 
 ## The Project
 
-- Multi-targets netstandard2.0 alongside net8/net9.
+- Multi-targets .NET Standard 2.0 and .NET 10.
 - Contains a GitHub action to validate the build.
 
 ## Rules
